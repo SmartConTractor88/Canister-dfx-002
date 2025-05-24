@@ -1,3 +1,47 @@
-service : {
-    "greet": (text) -> (text) query;
+type Proposal =
+    record {
+        description: text;
+        approve: nat32;
+        reject: nat32;
+        pass: nat32;
+        active: bool;
+        voted = vec principal;
+        owner: principal;
+    };
+
+type CreateProposal = 
+    record {
+        description: text;
+        active: bool;
+    }
+
+type Result = 
+    variant {
+        Ok;
+        Err: VotingError
+    }
+
+type VotingError = 
+    variant {
+        AlreadyVoted;
+        NotActive;
+        NoSuchProposal;
+        AccessRejected;
+        UpdateError;
+    }
+
+type Choice =
+    variant {
+    Approve;
+    Reject;
+    Pass;
+}
+
+service: {
+    "get_proposal": (nat64) -> (opt Proposal) query;
+    "get_proposal_count": () -> (nat64) query;
+    "create_proposal": (nat64, CreateProposal) -> (opt Proposal);
+    "edit_proposal": (nat64, CreateProposal) -> (Result);
+    "end_proposal": (nat64) -> (Result);
+    "vote": (nat64, Choice) -> (Result);
 }
