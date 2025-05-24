@@ -29,3 +29,32 @@ struct CreateProposal {
     description: String,
     active: bool,
 } // here are only the fields that the owner can set
+
+impl Storable for Proposal {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+}
+
+impl BoundedStorable for Proposal {
+    const MAX_SIZE: u32 = MAX_VALUES; // max size of the proposal description
+    const IS_FIXED_SIZE: bool = false;
+    fn to_bytes(&self) -> Vec<u8> {
+        Encode!(&self).unwrap()
+    }
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Decode!(&bytes, Proposal).unwrap()
+    }
+}
+
+thread_local! {
+    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = 
+    RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()))
+
+    static PROPOASL_MAP: RefCell<StableBTreeMap<u64, Proposal, Memory>> = 
+    RefCell::new(StableBTreeMap::init(MemoryManager.with(
+        |m| m.borrow().get(MemoryId::new(0)))))
+}
