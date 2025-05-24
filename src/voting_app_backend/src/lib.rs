@@ -4,8 +4,8 @@
 use candid::{CandidType, Decode, Encode};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager,
      VirtualMemory};
-use ic_stable_structures::{BoundedStorable, DefaultMemoryImpl, StableBTreeMap,
-     Storable};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap,
+     storable::Bound, Storable};
 use std::{borrow::Cow, cell::RefCell};
 use serde::Deserialize;
 
@@ -29,64 +29,56 @@ enum VotingError {
     UpdateError,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Clone)]
 struct Proposal {
     description: String,
     approve: u32,
     reject: u32,
     pass: u32,
-    active: bool, // if true, the proposal is active
-    voted: Vec<candid::Principal>, // can vote only once
-    owner: candid::Principal, 
+    active: bool,
+    voted: Vec<candid::Principal>,
+    owner: candid::Principal,
 }
 
 #[derive(CandidType, Deserialize)]
 struct CreateProposal {
     description: String,
     active: bool,
-} // here are only the fields that the owner can set
+}
 
 impl Storable for Proposal {
-    fn to_bytes(&self) -> Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
+    const BOUND: Bound = Bound::Bounded {
+        max_size: MAX_VALUES,
+        is_fixed_size: false,
+    };
+
+    fn to_bytes(&self) -> std::borrow::Cow<[u8]> {
+        std::borrow::Cow::Owned(Encode!(&self).unwrap())
     }
-    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+
+    fn from_bytes(bytes: std::borrow::Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()
     }
 }
 
-impl BoundedStorable for Proposal {
-    const MAX_SIZE: u32 = MAX_VALUES; // max size of the proposal description
-    const IS_FIXED_SIZE: bool = false;
-    fn to_bytes(&self) -> Vec<u8> {
-        Encode!(&self).unwrap()
-    }
-    fn from_bytes(bytes: &[u8]) -> Self {
-        Decode!(&bytes, Proposal).unwrap()
-    }
-}
-
 thread_local! {
-    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = 
-    RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()))
+    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
+        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 
-    static PROPOASL_MAP: RefCell<StableBTreeMap<u64, Proposal, Memory>> = 
-    RefCell::new(StableBTreeMap::init(MemoryManager.with(
-        |m| m.borrow().get(MemoryId::new(0)))))
+    static PROPOSAL_MAP: RefCell<StableBTreeMap<u64, Proposal, Memory>> =
+        RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(
+            |m| m.borrow().get(MemoryId::new(0))
+        )));
 }
 
 #[ic_cdk::query]
 fn get_proposal(key: u64) -> Option<Proposal> {
-    PROPOASL_MAP.with(|p| {
-        p.borrow().get(&key)
-    })
+    PROPOSAL_MAP.with(|p| p.borrow().get(&key))
 }
 
 #[ic_cdk::query]
 fn get_proposal_count() -> u64 {
-    PROPOASL_MAP.with(|p| {
-        p.borrow().len() as u64
-    })
+    PROPOSAL_MAP.with(|p| p.borrow().len() as u64)
 }
 
 #[ic_cdk::update]
@@ -98,19 +90,18 @@ fn create_proposal(key: u64, proposal: CreateProposal) -> Option<Proposal> {
         pass: 0,
         active: proposal.active,
         voted: Vec::new(),
-        owner: ic_cdk::caller(), // the owner is the caller of the function
+        owner: ic_cdk::caller(),
     };
 
-    PROPOASL_MAP.with(|p| {
+    PROPOSAL_MAP.with(|p| {
         let mut map = p.borrow_mut();
-        p.borrow_mut().insert(key, value.clone());
+        map.insert(key, value.clone())
     })
-    
 }
 
 #[ic_cdk::update]
-fn edit_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
-    PROPOASL_MAP.with(|p| {
+fn edit_proposal(key: u64, proposal: CreateProposal) -> Result<(), VotingError> {
+    PROPOSAL_MAP.with(|p| {
         let old_proposal_opt = p.borrow().get(&key);
         let old_proposal: Proposal;
 
@@ -123,14 +114,14 @@ fn edit_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
             return Err(VotingError::AccessRejected);
         }
 
-        let value:Proposal = Proposal {
+        let value = Proposal {
             description: proposal.description,
             approve: old_proposal.approve,
             reject: old_proposal.reject,
             pass: old_proposal.pass,
             active: proposal.active,
             voted: old_proposal.voted,
-            owner: ic_cdk::caller(), // owner remains the same
+            owner: old_proposal.owner,
         };
 
         let result = p.borrow_mut().insert(key, value);
@@ -143,8 +134,8 @@ fn edit_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
 }
 
 #[ic_cdk::update]
-fn end_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
-    PROPOASL_MAP.with(|p| {
+fn end_proposal(key: u64, _proposal: CreateProposal) -> Result<(), VotingError> {
+    PROPOSAL_MAP.with(|p| {
         let proposal_opt = p.borrow().get(&key);
         let mut proposal: Proposal;
 
@@ -157,9 +148,9 @@ fn end_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
             return Err(VotingError::AccessRejected);
         }
 
-        proposal.active = false; // set the proposal as inactive
+        proposal.active = false;
 
-        let result = p.borrow_mut().insert(key, value: proposal);
+        let result = p.borrow_mut().insert(key, proposal);
 
         match result {
             Some(_) => Ok(()),
@@ -170,12 +161,12 @@ fn end_proposal(key: u64, proposal: CreateProposal) -> Result<(), VoteError> {
 
 #[ic_cdk::update]
 fn vote(key: u64, choice: Choice) -> Result<(), VotingError> {
-    PROPOASL_MAP.with(|p| {
+    PROPOSAL_MAP.with(|p| {
         let proposal_opt = p.borrow().get(&key);
         let mut proposal: Proposal;
 
         match proposal_opt {
-            Some(value: Proposal) => proposal = value,
+            Some(value) => proposal = value,
             None => return Err(VotingError::NoSuchProposal),
         }
 
@@ -190,11 +181,11 @@ fn vote(key: u64, choice: Choice) -> Result<(), VotingError> {
         match choice {
             Choice::Approve => proposal.approve += 1,
             Choice::Reject => proposal.reject += 1,
-            Choice::Pass => proposal
-        };
+            Choice::Pass => proposal.pass += 1,
+        }
 
-        proposal.voted.push(caller); // add the caller to the list of voters
-    
+        proposal.voted.push(caller);
+
         let result = p.borrow_mut().insert(key, proposal);
         match result {
             Some(_) => Ok(()),
